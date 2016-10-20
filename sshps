@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+#
+# small readline wrapper for interacting with a powershell running
+# through ssh
+#
+# depends of pexpect (pure python package)
+# # pip3 install pexpect
+#
+# it's kind of a hack to make using powershell over an msys2 sshd on
+# windows bearable
+#
+# MIT License (C) 2016, Aurelien Aptel <aaptel@suse.com>
+#
+
+import sys
+import re
+import os
+import pexpect
+import readline
+import shutil
+import tempfile
+import atexit
+
+HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".sshps_hist")
+
+# what we wait for in the remote session
+PS_PROMPT = r'\nPS ([^>]+)> '
+PS_EXTENDED = '\n>> '
+
+# what we print to the user
+PROMPT = '\033[1;32mPS\033[0m \033[1m{cwd}\033[0m \033[1;32m>\033[0m '
+
+# sentinel to know if we have fallen back to the shell
+NEW_SHELL_PROMPT="xxxxxxSHELL_PROMPTxxxxxx"
+
+class ShellFallbackException(Exception):
+    pass
+
+# clean before PS is running
+def clean(buf):
+    if type(buf) is bytes:
+        buf = buf.decode('utf-8')
+    buf = re.sub(r'\r+\n+', '\n', buf)
+    buf = re.sub(r'[\r\n]+$', '', buf)
+    return buf
+
+def decode(s):
+    if not s:
+        return ''
+    if type(s) is bytes:
+        return s.decode('utf-8')
+    return s
+
+# run PS command and clean output
+def ps_run(c, cmd):
+    c.sendline(cmd)
+    r = c.expect([PS_PROMPT, PS_EXTENDED, NEW_SHELL_PROMPT])
+    if r == 1:
+        return (None, None)
+    if r == 2:
+        raise ShellFallbackException()
+    out = decode(c.before)
+    out = re.sub(r'^\s*(?:%s[\r\n]{1,4}){0,3}\s+'%re.escape(cmd), '', out)
+    out = clean(out)
+    cwd = decode(c.match.group(1))
+    return (out, cwd)
+
+def screen_lines():
+    r = shutil.get_terminal_size()
+    return r.lines
+
+
+#
+# arg checks
+#
+
+if not sys.argv[1:] or '-h' in sys.argv or '--help' in sys.argv:
+    print('Usage: sshps [ssh opts]\n')
+    print("sshps connects to an ssh host, runs powershell there and provides\n"+
+          "a nice readline UI for it")
+    exit(1)
+
+#
+# SSH and PS setup
+#
+
+# connect to host via ssh
+try:
+    c = pexpect.spawn('ssh', sys.argv[1:])
+    c.setecho(False)
+    print('[*] waiting for ssh prompt')
+    c.expect("[#$] ")
+except Exception:
+    print("[*] cannot start ssh or get to host prompt")
+    print(decode(c.before), decode(c.after))
+    exit(1)
+
+# set distinct prompt for regular shell
+c.sendline("PS1=%s"%NEW_SHELL_PROMPT)
+c.expect(NEW_SHELL_PROMPT)
+
+print('[*] running and waiting for powershell prompt')
+c.sendline("powershell")
+r = c.expect([PS_PROMPT, 'command not found'], timeout=5)
+if r == 1:
+    print("[*] powershell: command not found")
+    exit(1)
+
+cwd = decode(c.match.group(1))
+banner = clean(c.before)
+print("\n"+banner)
+
+#
+# readline setup
+#
+
+try:
+    readline.read_history_file(HISTORY_FILE)
+    readline.set_history_length(-1) # infinite
+except FileNotFoundError:
+    pass
+atexit.register(readline.write_history_file, HISTORY_FILE)
+
+#
+# REPL
+#
+
+while True:
+    try:
+        # handle multi-line/incomplete commands
+        first = True
+        full = False
+        while first or not full:
+            if first:
+                p = PROMPT.format(cwd=cwd)
+            else:
+                p = '>> '
+            line = input(p)
+            out, cwd = ps_run(c, line)
+            first = False
+            if cwd:
+                full = True
+    except ShellFallbackException:
+        print("\n[*] powershell exited, exiting...")
+        exit(1)
+    except pexpect.EOF:
+        print("\n[*] ssh exited?")
+        exit(1)
+    except (EOFError, KeyboardInterrupt):
+        print("\n[*] exiting...")
+        c.sendline("exit")
+        c.expect(NEW_SHELL_PROMPT)
+        c.sendline("exit")
+        c.wait()
+        exit(0)
+
+    # pipe big output through less
+    if out.count("\n") > screen_lines():
+        with tempfile.NamedTemporaryFile(mode='w+', delete=True) as tmp:
+            print(out, file=tmp)
+            os.system("less %s"%tmp.name)
+    else:
+        print(out)

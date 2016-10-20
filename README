@@ -1,0 +1,40 @@
+What is this?
+=============
+
+Suppose you have a Windows machine running an SSH server using msys2.
+
+You are interested in using powershell through it... but you quickly
+realize the UI is shit as the powershell exposed that way doesn't have
+history, the usual readline/inputrc bindings do nothing or insert
+garbage.
+
+Here comes sshps.
+
+Run it with the usual option you would pass to ssh when trying to
+access your Windows server.
+
+* sshps will connect to the Windows host and run powershell on its own.
+* It reads input using readline with all its good stuff (for now line editing and history)
+* It sends and runs the command over to the remote powershell session
+* Parses and cleans the output (large output are run through a pager)
+
+No completion yet. Iin that environement <tab> doesn't do anything
+anyway so you're not losing anything by using sshps.
+
+Usage
+=====
+
+    sshps [ssh opts]
+
+
+Installation
+============
+
+You need python3 and the pexpect package (it's a pure-python
+package). It can be installed with:
+
+    # pip3 install pexpect
+
+You can then just copy sshps somewhere in your $PATH
+
+Enjoy!
