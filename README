@@ -18,13 +18,34 @@ access your Windows server.
 * It sends and runs the command over to the remote powershell session
 * Parses and cleans the output (large output are run through a pager)
 
-No completion yet. Iin that environement <tab> doesn't do anything
+No completion yet. In that environement <tab> doesn't do anything
 anyway so you're not losing anything by using sshps.
 
 Usage
 =====
 
     sshps [ssh opts]
+
+Sample run
+==========
+
+    aaptel@aaptelpc ~ % ./sshps root@192.168.15.143
+    [*] waiting for ssh prompt
+    [*] running and waiting for powershell prompt
+    
+    Windows PowerShell
+    Copyright (C) 2016 Microsoft Corporation. All rights reserved.
+    PS C:\msys64\home\root > ls
+    Directory: C:\msys64\home\root
+    
+    
+    Mode                LastWriteTime         Length Name
+    ----                -------------         ------ ----
+    d-----       10/20/2016   7:07 AM                .ssh
+    -a----       10/20/2016  11:06 AM           1213 .bash_history
+    -a----       10/20/2016   8:54 AM              8 foo
+    PS C:\msys64\home\root >
+
 
 
 Installation
