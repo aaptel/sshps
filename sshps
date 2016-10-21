@@ -158,26 +158,98 @@ class PSSession:
         self.c.sendline("exit")
         self.c.wait()
 
+def is_error(s):
+    return '+ FullyQualifiedErrorId' in s
+
+
+class PSComplete():
+    def __init__(self, ps_session, comp_file=None):
+        self.ps = ps_session
+        self.opts_cache = {}
+        self.optrx = re.compile(r'''[[{\s](-[a-z0-9_-]+)''', re.I)
+        self.cmd_cache = []
+        try:
+            with open(comp_file) as f:
+                for line in f:
+                    self.cmd_cache.append(line.strip())
+        except FileNotFoundError:
+            pass
+
+    def get_cmds(self, cmd):
+        out = decode(self.ps.run("get-help %s | select name | ft -autosize"%cmd))
+        lines = out.split("\n")
+        if is_error(out) or 'Name' not in lines[0]:
+            return []
+        return sorted([x.strip() for x in lines[2:] if len(x) > 0])
+
+    def get_opts(self, cmd):
+        if cmd not in self.opts_cache:
+            out = decode(self.ps.run('get-help %s'%cmd))
+            if is_error(out):
+                self.opts_cache[cmd] = []
+            else:
+                self.opts_cache[cmd] = sorted(set(re.findall(self.optrx, out)))
+        return self.opts_cache[cmd]
+
+    def get_files(self, cwd, path):
+        pos = -1
+        try:
+            pos = path.rindex("\\")
+        except ValueError:
+            pass
+        if pos < 0:
+            return self._list_files(cwd, path+"*")
+        else:
+            pre = path[0:pos]
+            return [pre+"\\"+x for x in self._list_files(cwd, pre)]
+
+    def _list_files(self, cwd, path):
+        # cd to the right dir
+        if self.ps.cwd != cwd:
+            out =  decode(self.ps.run('cd %s'%cwd))
+            if is_error(out):
+                #print("\n\n"+out)
+                return []
+
+        # list
+        out = decode(self.ps.run('ls %s | select mode,name | ft -autosize'%path))
+        lines = out.split("\n")
+        if is_error(out) or 'Name' not in lines[0]:
+            #print("\n\n"+out)
+            return []
+
+        #print("\n\n"+out)
+        res = []
+        for line in lines[2:]:
+            try:
+                pos = line.index(' ')
+                mode, name = line[0:pos], line[pos+1:].strip()
+                if 'd' in mode:
+                    name += "\\"
+                res.append(name)
+            except ValueError:
+                pass
+        return sorted(res)
+
 
 class REPL:
     def complete(self, txt, state):
         try:
             if state == 0:
-                self.comp_matches = []
-                rx = re.compile('^'+re.escape(txt), re.I)
-                for cmd in self.complist:
-                    if rx.match(cmd):
-                        self.comp_matches.append(cmd)
-                        if len(self.comp_matches) >= 200:
-                            break
-                
+                try:
+                    buf = readline.get_line_buffer().split(" ")[0].strip()
+                except IndexError:
+                    buf = "ls"
+                #self.comp_matches = self.comp.get_opts(buf)
+                #self.comp_matches = self.comp.get_cmds(txt)
+                #self.comp_matches = self.comp.get_files(self.ps.cwd, txt)
             if state < len(self.comp_matches):
                 return self.comp_matches[state]
             else:
                 return None
         except Exception as e:
             print(e)
-        
+
     def __init__(self, ssh_args, completion_db, history):
         #
         # readline setup
@@ -185,23 +257,20 @@ class REPL:
         try:
             readline.read_history_file(history)
             readline.set_history_length(-1) # infinite
-            readline.set_completer_delims(' \t\n"\'()@#%^&*+/[]<>?')
-            self.complist = []
-            self.comp_matches = []
-            with open(completion_db) as f:
-                for line in f:
-                    self.complist.append(line.strip())
         except FileNotFoundError:
             pass
+        readline.set_completer_delims(' \t\n"\'()@#%^&*+/[]<>?')
         readline.parse_and_bind('tab: complete')
         readline.set_completer(lambda txt, state: self.complete(txt, state))
         atexit.register(readline.write_history_file, history)
-        
+
         #
         # SSH and PS setup
         #
         try:
             self.ps = PSSession(ssh_args)
+            self.comp = PSComplete(PSSession(ssh_args), completion_db)
+            self.comp_matches = []
         except ConnexionException as e:
             print("[*] ssh connexion failed")
             print(decode(e))
