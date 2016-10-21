@@ -22,6 +22,7 @@ import tempfile
 import atexit
 
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".sshps_hist")
+COMPLETION_FILE = os.path.join(os.path.expanduser("~"), ".sshps_comp")
 
 # what we wait for in the remote session
 PS_PROMPT = r'\nPS ([^>]+)> '
@@ -44,7 +45,7 @@ def main():
               "a nice readline UI for it")
         exit(1)
 
-    repl = REPL(sys.argv[1:], HISTORY_FILE)
+    repl = REPL(sys.argv[1:], COMPLETION_FILE, HISTORY_FILE)
     while True:
         repl.read_and_run_full_cmd()
 
@@ -159,16 +160,43 @@ class PSSession:
 
 
 class REPL:
-    def __init__(self, ssh_args, history):
+    def complete(self, txt, state):
+        try:
+            if state == 0:
+                self.comp_matches = []
+                rx = re.compile('^'+re.escape(txt), re.I)
+                for cmd in self.complist:
+                    if rx.match(cmd):
+                        self.comp_matches.append(cmd)
+                        if len(self.comp_matches) >= 200:
+                            break
+                
+            if state < len(self.comp_matches):
+                return self.comp_matches[state]
+            else:
+                return None
+        except Exception as e:
+            print(e)
+        
+    def __init__(self, ssh_args, completion_db, history):
         #
         # readline setup
         #
         try:
             readline.read_history_file(history)
             readline.set_history_length(-1) # infinite
+            readline.set_completer_delims(' \t\n"\'()@#%^&*+/[]<>?')
+            self.complist = []
+            self.comp_matches = []
+            with open(completion_db) as f:
+                for line in f:
+                    self.complist.append(line.strip())
         except FileNotFoundError:
             pass
+        readline.parse_and_bind('tab: complete')
+        readline.set_completer(lambda txt, state: self.complete(txt, state))
         atexit.register(readline.write_history_file, history)
+        
         #
         # SSH and PS setup
         #

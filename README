@@ -14,12 +14,12 @@ Run it with the usual option you would pass to ssh when trying to
 access your Windows server.
 
 * sshps will connect to the Windows host and run powershell on its own.
-* It reads input using readline with all its good stuff (for now line editing and history)
+* It reads input using readline, with all the good stuff:
+   - usual line editing keybindings
+   - command history (kept between runs)
+   - command completion
 * It sends and runs the command over to the remote powershell session
 * Parses and cleans the output (large output are run through a pager)
-
-No completion yet. In that environement <tab> doesn't do anything
-anyway so you're not losing anything by using sshps.
 
 Usage
 =====
@@ -51,17 +51,24 @@ Sample run
 Installation
 ============
 
-You need python3 and the pexpect package (it's a pure-python
-package). It can be installed with:
+* You need python3 and the pexpect package (it's a pure-python
+  package). It can be installed with:
 
     # pip3 install pexpect
 
-You can then just copy sshps somewhere in your $PATH
+You can then just copy sshps somewhere in your $PATH.
+
+* Autocompletion is done from a file listing all possible commands.
+
+You can generate this file yourself:
+
+    $ ./get_completion_db.sh [ssh opts] > ~/.sshps_comp
+
+Or use the one provided:
+
+    $ cp cmdlist ~/.sshps_comp
 
 TODO
 ====
 
-Try to do completion by running 'Get-Help' in the background.
-
-Enjoy!
-
+Complete dynamically using get-help, and try to be context aware.
