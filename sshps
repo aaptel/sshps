@@ -238,6 +238,7 @@ class REPL:
         if out.count("\n") > screen_lines():
             with tempfile.NamedTemporaryFile(mode='w+', delete=True) as tmp:
                 print(out, file=tmp)
+                tmp.flush()
                 pager = os.environ.get('PAGER', 'less')
                 os.system("%s %s"%(pager, tmp.name))
         else:
