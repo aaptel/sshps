@@ -33,8 +33,33 @@ PROMPT = '\033[1;32mPS\033[0m \033[1m{cwd}\033[0m \033[1;32m>\033[0m '
 # sentinel to know if we have fallen back to the shell
 NEW_SHELL_PROMPT="xxxxxxSHELL_PROMPTxxxxxx"
 
+def main():
+    #
+    # arg checks
+    #
+
+    if not sys.argv[1:] or '-h' in sys.argv or '--help' in sys.argv:
+        print('Usage: sshps [ssh opts]\n')
+        print("sshps connects to an ssh host, runs powershell there and provides\n"+
+              "a nice readline UI for it")
+        exit(1)
+
+    repl = REPL(sys.argv[1:], HISTORY_FILE)
+    while True:
+        repl.read_and_run_full_cmd()
+
 class ShellFallbackException(Exception):
     pass
+
+class ConnexionException(Exception):
+    pass
+
+class ShellExitedException(Exception):
+    pass
+
+class PSNotFoundException(Exception):
+    pass
+
 
 # clean before PS is running
 def clean(buf):
@@ -45,119 +70,151 @@ def clean(buf):
     return buf
 
 def decode(s):
-    if not s:
+    if not s or s == pexpect.EOF:
         return ''
-    if type(s) is bytes:
+    if isinstance(s, bytes):
         return s.decode('utf-8')
-    return s
-
-# run PS command and clean output
-def ps_run(c, cmd):
-    c.sendline(cmd)
-    r = c.expect([PS_PROMPT, PS_EXTENDED, NEW_SHELL_PROMPT])
-    if r == 1:
-        return (None, None)
-    if r == 2:
-        raise ShellFallbackException()
-    out = decode(c.before)
-    out = re.sub(r'^\s*(?:%s[\r\n]{1,4}){0,3}\s+'%re.escape(cmd), '', out)
-    out = clean(out)
-    cwd = decode(c.match.group(1))
-    return (out, cwd)
+    return str(s)
 
 def screen_lines():
     r = shutil.get_terminal_size()
     return r.lines
 
+class ShellSession:
+    def __init__(self, ssh_args):
+        try:
+            self.c = pexpect.spawn('ssh', ssh_args)
+            self.c.setecho(False)
+            self.c.expect("[#$] ")
+        except Exception as e:
+            out = decode(self.c.before) + decode(self.c.after)
+            raise ConnexionException(out) from e
 
-#
-# arg checks
-#
+        self.c.sendline("PS1=%s"%NEW_SHELL_PROMPT)
+        self.c.expect(NEW_SHELL_PROMPT)
 
-if not sys.argv[1:] or '-h' in sys.argv or '--help' in sys.argv:
-    print('Usage: sshps [ssh opts]\n')
-    print("sshps connects to an ssh host, runs powershell there and provides\n"+
-          "a nice readline UI for it")
-    exit(1)
+    def run(self, cmd):
+        try:
+            self.c.sendline(cmd)
+            r = self.c.expect(NEW_SHELL_PROMPT)
+            out = decode(self.c.before)
+        except pexpect.EOF as e:
+            raise ShellExitedException() from e
+        return out
 
-#
-# SSH and PS setup
-#
+    def quit(self):
+        self.c.sendline("exit")
+        self.c.expect(pexpect.EOF)
 
-# connect to host via ssh
-try:
-    c = pexpect.spawn('ssh', sys.argv[1:])
-    c.setecho(False)
-    print('[*] waiting for ssh prompt')
-    c.expect("[#$] ")
-except Exception:
-    print("[*] cannot start ssh or get to host prompt")
-    print(decode(c.before), decode(c.after))
-    exit(1)
+class PSSession:
+    def __init__(self, ssh_args):
+        try:
+            self.c = pexpect.spawn('ssh', ssh_args)
+            self.c.setecho(False)
+            self.c.expect("[#$] ")
+        except Exception as e:
+            out = decode(self.c.before) + decode(self.c.after)
+            raise ConnexionException(out) from e
 
-# set distinct prompt for regular shell
-c.sendline("PS1=%s"%NEW_SHELL_PROMPT)
-c.expect(NEW_SHELL_PROMPT)
+        self.c.sendline("PS1=%s"%NEW_SHELL_PROMPT)
+        self.c.expect(NEW_SHELL_PROMPT)
+        self.c.sendline("powershell")
+        r = self.c.expect([PS_PROMPT, 'command not found'], timeout=5)
+        if r == 1:
+            raise PSNotFoundException()
+        self.cwd = decode(self.c.match.group(1))
+        self.banner = clean(self.c.before)
+        self.extended = False
+        self.last_cmd = None
+        self.last_full_cmd = None
 
-print('[*] running and waiting for powershell prompt')
-c.sendline("powershell")
-r = c.expect([PS_PROMPT, 'command not found'], timeout=5)
-if r == 1:
-    print("[*] powershell: command not found")
-    exit(1)
+    def run(self, cmd):
+        if not self.extended:
+            self.last_full_cmd = ''
 
-cwd = decode(c.match.group(1))
-banner = clean(c.before)
-print("\n"+banner)
+        self.last_cmd = cmd
+        self.last_full_cmd += cmd
 
-#
-# readline setup
-#
+        try:
+            self.c.sendline(cmd)
+            r = self.c.expect([PS_PROMPT, PS_EXTENDED, NEW_SHELL_PROMPT])
+            if r == 1:
+                self.extended = True
+                return None
+            if r == 2:
+                raise ShellFallbackException()
+            out = decode(self.c.before)
+            out = re.sub(r'^\s*(?:%s[\r\n]{1,4}){0,3}\s+'%re.escape(cmd), '', out)
+            out = clean(out)
+            self.cwd = decode(self.c.match.group(1))
+            return out
+        except pexpect.EOF as e:
+            raise ShellExitedException() from e
 
-try:
-    readline.read_history_file(HISTORY_FILE)
-    readline.set_history_length(-1) # infinite
-except FileNotFoundError:
-    pass
-atexit.register(readline.write_history_file, HISTORY_FILE)
+    def quit(self):
+        self.c.sendline("exit")
+        self.c.expect(NEW_SHELL_PROMPT)
+        self.c.sendline("exit")
+        self.c.wait()
 
-#
-# REPL
-#
 
-while True:
-    try:
-        # handle multi-line/incomplete commands
-        first = True
-        full = False
-        while first or not full:
-            if first:
-                p = PROMPT.format(cwd=cwd)
-            else:
+class REPL:
+    def __init__(self, ssh_args, history):
+        #
+        # readline setup
+        #
+        try:
+            readline.read_history_file(history)
+            readline.set_history_length(-1) # infinite
+        except FileNotFoundError:
+            pass
+        atexit.register(readline.write_history_file, history)
+        #
+        # SSH and PS setup
+        #
+        try:
+            self.ps = PSSession(ssh_args)
+        except ConnexionException as e:
+            print("[*] ssh connexion failed")
+            print(decode(e))
+            exit(1)
+        except PSNotFoundException:
+            print("\n[*] cannot run powershell on remote host (command not found)")
+            exit(1)
+
+        print("\n"+self.ps.banner)
+
+    def read_and_run_full_cmd(self):
+        try:
+            # handle multi-line/incomplete commands
+            p = PROMPT.format(cwd=self.ps.cwd)
+            while True:
+                line = input(p)
+                out = self.ps.run(line)
+                if not self.ps.extended:
+                    break
                 p = '>> '
-            line = input(p)
-            out, cwd = ps_run(c, line)
-            first = False
-            if cwd:
-                full = True
-    except ShellFallbackException:
-        print("\n[*] powershell exited, exiting...")
-        exit(1)
-    except pexpect.EOF:
-        print("\n[*] ssh exited?")
-        exit(1)
-    except (EOFError, KeyboardInterrupt):
-        print("\n[*] exiting...")
-        c.sendline("exit")
-        c.expect(NEW_SHELL_PROMPT)
-        c.sendline("exit")
-        c.wait()
-        exit(0)
 
-    # pipe big output through less
-    if out.count("\n") > screen_lines():
-        with tempfile.NamedTemporaryFile(mode='w+', delete=True) as tmp:
-            print(out, file=tmp)
-            os.system("less %s"%tmp.name)
-    else:
-        print(out)
+        except ShellFallbackException:
+            print("\n[*] powershell exited, exiting...")
+            exit(1)
+        except ShellExitedException:
+            print("\n[*] ssh exited?")
+            exit(1)
+        except (EOFError, KeyboardInterrupt):
+            print("\n[*] exiting...")
+            self.ps.quit()
+            exit(0)
+
+        # pipe big output through less
+        if out.count("\n") > screen_lines():
+            with tempfile.NamedTemporaryFile(mode='w+', delete=True) as tmp:
+                print(out, file=tmp)
+                pager = os.environ.get('PAGER', 'less')
+                os.system("%s %s"%(pager, tmp.name))
+        else:
+            print(out)
+
+
+if __name__ == '__main__':
+    main()

@@ -58,4 +58,10 @@ package). It can be installed with:
 
 You can then just copy sshps somewhere in your $PATH
 
+TODO
+====
+
+Try to do completion by running 'Get-Help' in the background.
+
 Enjoy!
+
