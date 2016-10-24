@@ -18,8 +18,12 @@ access your Windows server.
    - usual line editing keybindings
    - command history (kept between runs)
    - command completion
+   - command option completion (type - and TAB)
+   - path completion
 * It sends and runs the command over to the remote powershell session
 * Parses and cleans the output (large output are run through a pager)
+* Completion is done via a separate powershell session running get-help
+  commands in the background
 
 Usage
 =====
@@ -67,8 +71,3 @@ You can generate this file yourself:
 Or use the one provided:
 
     $ cp cmdlist ~/.sshps_comp
-
-TODO
-====
-
-Complete dynamically using get-help, and try to be context aware.
