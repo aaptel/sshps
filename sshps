@@ -20,6 +20,7 @@ import readline
 import shutil
 import tempfile
 import atexit
+import traceback
 
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".sshps_hist")
 COMPLETION_FILE = os.path.join(os.path.expanduser("~"), ".sshps_comp")
@@ -33,6 +34,8 @@ PROMPT = '\033[1;32mPS\033[0m \033[1m{cwd}\033[0m \033[1;32m>\033[0m '
 
 # sentinel to know if we have fallen back to the shell
 NEW_SHELL_PROMPT="xxxxxxSHELL_PROMPTxxxxxx"
+
+PS_COMPLETION_DELIMS = ' \t\n"\'()@#%^&*+/[]<>?'
 
 def main():
     #
@@ -182,14 +185,20 @@ class PSComplete():
             return []
         return sorted([x.strip() for x in lines[2:] if len(x) > 0])
 
-    def get_opts(self, cmd):
+    def get_opts(self, cmd, pre=''):
         if cmd not in self.opts_cache:
             out = decode(self.ps.run('get-help %s'%cmd))
             if is_error(out):
                 self.opts_cache[cmd] = []
             else:
                 self.opts_cache[cmd] = sorted(set(re.findall(self.optrx, out)))
-        return self.opts_cache[cmd]
+
+        if len(pre) > 1:
+            rx = re.compile('^'+re.escape(pre), re.I)
+            return [x for x in self.opts_cache[cmd] if re.match(rx, x)]
+        else:
+            return self.opts_cache[cmd]
+
 
     def get_files(self, cwd, path):
         pos = -1
@@ -232,23 +241,42 @@ class PSComplete():
         return sorted(res)
 
 
+def last_cmd_in_string(s):
+    last = re.split(r'[;(){}\[\]]', s)[-1]
+    tokens = last.split()
+    if tokens:
+        return tokens[0].strip()
+    else:
+        return ''
+
 class REPL:
     def complete(self, txt, state):
         try:
             if state == 0:
-                try:
-                    buf = readline.get_line_buffer().split(" ")[0].strip()
-                except IndexError:
-                    buf = "ls"
-                #self.comp_matches = self.comp.get_opts(buf)
-                #self.comp_matches = self.comp.get_cmds(txt)
-                #self.comp_matches = self.comp.get_files(self.ps.cwd, txt)
+                #readline.set_completer_delims('')
+                line = readline.get_line_buffer()
+                beg = readline.get_begidx()
+                end = readline.get_endidx()
+                last_cmd = last_cmd_in_string(line)
+                last_tok = txt.strip()
+
+                if last_cmd == '' or last_cmd == last_tok:
+                    # at beginning of command, complete commands
+                    self.comp_matches = self.comp.get_cmds(last_tok+'*')
+                elif len(last_tok) > 0 and last_tok[0] == '-':
+                    # in what looks like an option, complete last cmd options
+                    self.comp_matches = self.comp.get_opts(last_cmd, txt)
+                else:
+                    # complete files
+                    self.comp_matches = self.comp.get_files(self.ps.cwd, txt)
+
             if state < len(self.comp_matches):
                 return self.comp_matches[state]
             else:
                 return None
         except Exception as e:
             print(e)
+            traceback.print_exc()
 
     def __init__(self, ssh_args, completion_db, history):
         #
@@ -259,7 +287,7 @@ class REPL:
             readline.set_history_length(-1) # infinite
         except FileNotFoundError:
             pass
-        readline.set_completer_delims(' \t\n"\'()@#%^&*+/[]<>?')
+        readline.set_completer_delims(PS_COMPLETION_DELIMS)
         readline.parse_and_bind('tab: complete')
         readline.set_completer(lambda txt, state: self.complete(txt, state))
         atexit.register(readline.write_history_file, history)
